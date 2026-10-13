@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Exam Recorder Admin</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1a1d21; --muted:#6b7280; --line:#e5e7eb;
+          --green:#16a34a; --red:#dc2626; --blue:#2563eb; --amber:#d97706; --gray:#9ca3af; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.4 system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width:960px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:22px; margin:0 0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  input { font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:8px; min-width:0; }
+  button { font:inherit; font-weight:600; padding:8px 16px; border:0; border-radius:8px; cursor:pointer; color:#fff; }
+  .start { background:var(--green); } .stop { background:var(--red); } .small { background:var(--blue); padding:6px 10px; font-size:13px; }
+  .live { font-weight:600; } .muted { color:var(--muted); font-size:13px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { font-size:12px; text-transform:uppercase; color:var(--muted); }
+  .code { font-family:ui-monospace,monospace; font-weight:700; letter-spacing:1px; }
+  .pill { display:inline-block; padding:2px 10px; border-radius:99px; font-size:13px; font-weight:600; color:#fff; }
+  .counts { display:flex; gap:16px; flex-wrap:wrap; margin-top:8px; }
+  .wrap { overflow-x:auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Exam Recorder Admin</h1>
+
+  <div class="card">
+    <div class="row">
+      <input id="name" placeholder="Session name (e.g. Math Final)">
+      <input id="pkg" placeholder="Exam app package (optional)">
+      <button class="start" id="startBtn">▶ Start all</button>
+      <button class="stop" id="stopBtn">■ Stop all</button>
+    </div>
+    <p class="live" id="sessionLine">No session</p>
+    <div class="counts" id="counts"></div>
+  </div>
+
+  <div class="card wrap">
+    <table>
+      <thead><tr><th>Tablet code</th><th>Student</th><th>Status</th><th>Detail</th><th>Last upload</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="5" class="muted">No tablets yet. Open the app on a tablet.</td></tr></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const STATUS = {
+  offline:   ['Offline', 'var(--gray)'],
+  idle:      ['Ready', 'var(--green)'],
+  starting:  ['Starting', 'var(--amber)'],
+  recording: ['Recording', 'var(--red)'],
+  uploading: ['Uploading', 'var(--blue)'],
+  done:      ['Uploaded', 'var(--green)'],
+  error:     ['Error', 'var(--amber)'],
+};
+const editing = new Set();
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+  return r.json();
+}
+
+function el(tag, text, cls) { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; }
+
+function render({ session, devices }) {
+  const line = document.getElementById('sessionLine');
+  line.textContent = !session ? 'No session'
+    : session.recording ? `🔴 Recording: ${session.name} (${session.id})`
+    : `⏹ Stopped: ${session.name} (${session.id})`;
+
+  const counts = {};
+  devices.forEach(d => { const s = d.online ? d.status : 'offline'; counts[s] = (counts[s] || 0) + 1; });
+  const c = document.getElementById('counts'); c.replaceChildren();
+  Object.entries(counts).forEach(([s, n]) => c.append(el('span', `${STATUS[s]?.[0] || s}: ${n}`, 'muted')));
+
+  const tbody = document.getElementById('rows');
+  if (!devices.length) return;
+  tbody.replaceChildren();
+  devices.sort((a, b) => (a.studentId || 'zzz').localeCompare(b.studentId || 'zzz')).forEach(d => {
+    const tr = el('tr');
+    tr.append(el('td', d.code, 'code'));
+
+    const td = el('td'); const row = el('div', null, 'row');
+    const inp = el('input'); inp.value = d.studentId || ''; inp.placeholder = 'Student ID'; inp.size = 12;
+    inp.onfocus = () => editing.add(d.id); inp.onblur = () => setTimeout(() => editing.delete(d.id), 300);
+    const btn = el('button', 'Link', 'small');
+    btn.onclick = async () => { await api('/api/assign', { deviceId: d.id, studentId: inp.value }); editing.delete(d.id); refresh(); };
+    row.append(inp, btn); td.append(row); tr.append(td);
+
+    const s = d.online ? d.status : 'offline';
+    const [label, color] = STATUS[s] || [s, 'var(--gray)'];
+    const pill = el('span', label + (d.pendingUploads ? ` (${d.pendingUploads})` : ''), 'pill'); pill.style.background = color;
+    const ps = el('td'); ps.append(pill); tr.append(ps);
+    tr.append(el('td', d.detail || '', 'muted'));
+    tr.append(el('td', d.lastUpload || '-', 'muted'));
+    tbody.append(tr);
+  });
+}
+
+async function refresh() {
+  if (editing.size) return; // don't wipe an input being typed in
+  try { render(await api('/api/state')); } catch {}
+}
+
+document.getElementById('startBtn').onclick = async () => {
+  const name = document.getElementById('name').value.trim();
+  if (!name) return alert('Enter a session name');
+  await api('/api/session/start', { name, examPackage: document.getElementById('pkg').value });
+  refresh();
+};
+document.getElementById('stopBtn').onclick = async () => {
+  if (!confirm('Stop recording on all tablets?')) return;
+  await api('/api/session/stop', {}); refresh();
+};
+refresh(); setInterval(refresh, 2000);
+</script>
+</body>
+</html>
